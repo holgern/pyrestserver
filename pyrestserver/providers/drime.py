@@ -36,18 +36,20 @@ class DrimeStorageProvider(StorageProvider):
     def __init__(
         self,
         client: DrimeClient,
-        workspace_id: int = 0,
+        config: dict[str, Any] | None = None,
         readonly: bool = False,
     ) -> None:
         """Initialize the storage provider.
 
         Args:
             client: The Drime API client
-            workspace_id: The workspace ID to use (0 for personal)
+            config: Configuration dict (can include workspace_id, etc.)
             readonly: Whether to allow write operations
         """
         self.client = client
-        self.workspace_id = workspace_id
+        self._config = config or {}
+        # Get workspace_id from config, default to 0 (personal)
+        self.workspace_id = self._config.get("workspace_id", 0)
         self._readonly = readonly
         # Cache for folder IDs to reduce API calls
         self._folder_cache: dict[str, int | None] = {}

@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import parse_qs, unquote
 
@@ -648,3 +649,66 @@ def run_rest_server(
     finally:
         server.stop()
         logger.info("REST server stopped.")
+
+
+def create_provider_from_config(
+    backend_name: str,
+    readonly: bool = False,
+) -> StorageProvider:
+    """Create a storage provider from backend configuration.
+
+    Args:
+        backend_name: Name of the backend configuration
+        readonly: Whether to enable readonly mode
+
+    Returns:
+        StorageProvider instance
+
+    Raises:
+        ValueError: If backend config is not found or invalid
+    """
+    from pyrestserver.config import get_config_manager
+
+    config_manager = get_config_manager()
+    backend_cfg = config_manager.get_backend(backend_name)
+
+    if not backend_cfg:
+        available = config_manager.list_backends()
+        raise ValueError(
+            f"Backend config '{backend_name}' not found. "
+            f"Available: {', '.join(available) if available else 'none'}"
+        )
+
+    backend_type = backend_cfg.backend_type
+    config = backend_cfg.get_all()
+
+    if backend_type == "local":
+        from pyrestserver.providers.local import LocalStorageProvider
+
+        base_path = config.get("path") or config.get("base_path")
+        if not base_path:
+            raise ValueError("Local backend config must include 'path' or 'base_path'")
+
+        return LocalStorageProvider(
+            base_path=Path(base_path),
+            readonly=readonly,
+        )
+    elif backend_type == "drime":
+        try:
+            from pydrime import DrimeClient
+
+            from pyrestserver.providers.drime import DrimeStorageProvider
+        except ImportError as err:
+            raise ImportError(
+                "Drime backend requires pydrime package. "
+                "Install with: pip install pyrestserver[drime]"
+            ) from err
+
+        api_key = config.get("api_key")
+        if not api_key:
+            raise ValueError("Drime backend config must include 'api_key'")
+
+        client = DrimeClient(api_key=api_key)
+        return DrimeStorageProvider(client=client, config=config, readonly=readonly)
+    else:
+        raise ValueError(f"Unsupported backend type: {backend_type}")

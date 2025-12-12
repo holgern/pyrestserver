@@ -32,13 +32,13 @@ class TestDrimeStorageProvider:
             return
         self.mock_client = MagicMock()
 
-    def _create_provider(self, readonly: bool = False):
+    def _create_provider(self, readonly: bool = False, workspace_id: int = 0):
         """Create a DrimeStorageProvider with mocked client."""
         from pyrestserver.providers.drime import DrimeStorageProvider
 
         return DrimeStorageProvider(
             client=self.mock_client,
-            workspace_id=0,
+            config={"workspace_id": workspace_id},
             readonly=readonly,
         )
 

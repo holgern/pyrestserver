@@ -8,7 +8,7 @@ import logging
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import click
 from rich.console import Console
@@ -19,7 +19,21 @@ from pyrestserver.constants import DEFAULT_PORT
 console = Console()
 
 
-@click.command()
+@click.group(invoke_without_command=True)
+@click.pass_context
+@click.version_option()
+def cli(ctx: click.Context) -> None:
+    """PyRestServer - REST server for restic backups.
+
+    Run 'pyrestserver serve' to start the server.
+    Run 'pyrestserver config' for configuration management.
+    """
+    # If no subcommand, show help
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@cli.command()
 @click.option(
     "--path",
     default=str(Path(tempfile.gettempdir()) / "restic"),
@@ -69,13 +83,11 @@ console = Console()
     help="storage backend to use (default: local)",
 )
 @click.option(
-    "--workspace-id",
-    default=0,
-    type=int,
-    help="[Drime only] workspace ID to use (0 for personal)",
+    "--backend-config",
+    default=None,
+    help="backend configuration name (from ~/.config/pyrestserver/backends.toml)",
 )
-@click.version_option()
-def main(
+def serve(
     path: str,
     listen: str,
     no_auth: bool,
@@ -91,9 +103,9 @@ def main(
     prometheus_no_auth: bool,
     no_verify_upload: bool,
     backend: str,
-    workspace_id: int,
+    backend_config: Optional[str],
 ) -> None:
-    """Run a REST server for use with restic."""
+    """Start the REST server for restic."""
 
     # Setup logging
     logging.basicConfig(
@@ -104,19 +116,24 @@ def main(
 
     logger = logging.getLogger(__name__)
 
-    # Print data directory (matching rest-server behavior)
-    console.print(f"Data directory: {path}")
-
     # Create storage provider based on backend
     if backend == "local":
         from pyrestserver.providers.local import LocalStorageProvider
+
+        # Print data directory (matching rest-server behavior)
+        console.print(f"Data directory: {path}")
 
         provider = LocalStorageProvider(
             base_path=Path(path),
             readonly=append_only,  # append-only = readonly deletes
         )
     elif backend == "drime":
-        provider = _create_drime_provider(workspace_id, append_only)
+        provider, config_info = _create_drime_provider(backend_config, append_only)
+        # Print backend info
+        console.print("Storage backend: Drime Cloud")
+        console.print(f"Workspace ID: {config_info.get('workspace_id', 0)}")
+        if backend_config:
+            console.print(f"Configuration: {backend_config}")
     else:
         console.print(f"[red]Unknown backend: {backend}[/red]")
         sys.exit(1)
@@ -230,15 +247,17 @@ def main(
         sys.exit(1)
 
 
-def _create_drime_provider(workspace_id: int, readonly: bool):
+def _create_drime_provider(
+    backend_config_name: Optional[str], readonly: bool
+) -> tuple[Any, dict[str, Any]]:
     """Create a Drime storage provider.
 
     Args:
-        workspace_id: Workspace ID to use
+        backend_config_name: Name of backend config to use (or None to use env vars)
         readonly: Whether to enable readonly mode
 
     Returns:
-        DrimeStorageProvider instance
+        Tuple of (DrimeStorageProvider instance, config dict)
     """
     try:
         from pydrime import DrimeClient
@@ -249,19 +268,180 @@ def _create_drime_provider(workspace_id: int, readonly: bool):
         console.print("Install with: pip install pyrestserver[drime]")
         sys.exit(1)
 
-    # Initialize Drime client
-    try:
-        client = DrimeClient.from_env()
-    except Exception as e:
-        console.print(f"[red]Failed to initialize Drime client: {e}[/red]")
-        console.print("\nMake sure the following environment variables are set:")
-        console.print("  DRIME_EMAIL")
-        console.print("  DRIME_PASSWORD")
+    config: dict[str, Any] = {}
+
+    # Load config from backend config if provided
+    if backend_config_name:
+        from pyrestserver.config import get_config_manager
+
+        config_manager = get_config_manager()
+        backend_cfg = config_manager.get_backend(backend_config_name)
+
+        if not backend_cfg:
+            console.print(
+                f"[red]Backend config '{backend_config_name}' not found.[/red]"
+            )
+            console.print("Available backends:")
+            for name in config_manager.list_backends():
+                console.print(f"  - {name}")
+            sys.exit(1)
+
+        if backend_cfg.backend_type != "drime":
+            console.print(
+                f"[red]Backend '{backend_config_name}' is not a drime backend.[/red]"
+            )
+            sys.exit(1)
+
+        config = backend_cfg.get_all()
+
+        # Initialize Drime client with API key from config
+        try:
+            api_key = config.get("api_key")
+
+            if not api_key:
+                console.print("[red]Drime backend config must include 'api_key'.[/red]")
+                sys.exit(1)
+
+            client = DrimeClient(api_key=api_key)
+        except Exception as e:
+            console.print(f"[red]Failed to initialize Drime client: {e}[/red]")
+            sys.exit(1)
+    else:
+        # Initialize Drime client from environment (uses DRIME_API_KEY)
+        try:
+            client = DrimeClient()
+            # Get workspace_id from environment if available
+            import os
+
+            workspace_id = os.environ.get("DRIME_WORKSPACE_ID", "0")
+            config["workspace_id"] = int(workspace_id)
+        except Exception as e:
+            console.print(f"[red]Failed to initialize Drime client: {e}[/red]")
+            console.print("\nMake sure DRIME_API_KEY environment variable is set.")
+            console.print("Or use --backend-config to specify a backend config.")
+            sys.exit(1)
+
+    provider = DrimeStorageProvider(client=client, config=config, readonly=readonly)
+    return provider, config
+
+
+@cli.command()
+@click.argument("password", required=False)
+def obscure(password: Optional[str]) -> None:
+    """Obscure a password for use in the pyrestserver config file.
+
+    If PASSWORD is not provided, will prompt for it interactively.
+    """
+    from vaultconfig import obscure as obscure_module
+
+    if password is None:
+        password = click.prompt("Enter password to obscure", hide_input=True)
+
+    if not password:
+        console.print("[red]Error: Password cannot be empty[/red]")
         sys.exit(1)
 
-    return DrimeStorageProvider(
-        client=client, workspace_id=workspace_id, readonly=readonly
+    obscured = obscure_module.obscure(password)
+    console.print(f"\n[green]Obscured password:[/green] {obscured}")
+    console.print("\n[yellow]Note:[/yellow] This can be used in the config file.")
+    console.print(
+        "The password will be automatically revealed when the config is loaded."
     )
+
+
+@cli.command()
+def config() -> None:
+    """Enter an interactive configuration session.
+
+    Allows you to manage backend configurations interactively.
+    """
+    from pyrestserver.config import get_config_manager
+
+    config_manager = get_config_manager()
+
+    console.print("\n[bold cyan]PyRestServer Configuration Manager[/bold cyan]\n")
+
+    while True:
+        console.print("[bold]Available commands:[/bold]")
+        console.print("  1. List backends")
+        console.print("  2. Add backend")
+        console.print("  3. Show backend")
+        console.print("  4. Remove backend")
+        console.print("  5. Exit")
+
+        choice = click.prompt("\nEnter choice", type=int, default=5)
+
+        if choice == 1:
+            # List backends
+            backends = config_manager.list_backends()
+            if not backends:
+                console.print("\n[yellow]No backends configured[/yellow]\n")
+            else:
+                console.print("\n[bold]Configured backends:[/bold]")
+                for name in backends:
+                    backend = config_manager.get_backend(name)
+                    if backend:
+                        console.print(f"  • {name} ({backend.backend_type})")
+                console.print()
+
+        elif choice == 2:
+            # Add backend
+            console.print("\n[bold]Add new backend[/bold]")
+            name = click.prompt("Backend name")
+            backend_type = click.prompt(
+                "Backend type", type=click.Choice(["local", "drime"])
+            )
+
+            config_data: dict[str, Any] = {}
+
+            if backend_type == "local":
+                path = click.prompt("Base path")
+                config_data["path"] = path
+
+            elif backend_type == "drime":
+                api_key = click.prompt("Drime API key", hide_input=True)
+                workspace_id = click.prompt(
+                    "Workspace ID (0 for personal)", type=int, default=0
+                )
+                config_data["api_key"] = api_key
+                config_data["workspace_id"] = workspace_id
+
+            config_manager.add_backend(name, backend_type, config_data)
+            console.print(f"\n[green]✓[/green] Backend '{name}' added successfully\n")
+
+        elif choice == 3:
+            # Show backend
+            name = click.prompt("\nBackend name")
+            backend = config_manager.get_backend(name)
+
+            if not backend:
+                console.print(f"\n[red]Error:[/red] Backend '{name}' not found\n")
+            else:
+                console.print(f"\n[bold]Backend: {name}[/bold]")
+                console.print(f"Type: {backend.backend_type}")
+                console.print("\nConfiguration:")
+                config_data = backend.get_all()
+                for key, value in config_data.items():
+                    # Hide sensitive values
+                    if key in ("api_key", "password"):
+                        console.print(f"  {key}: [dim]<hidden>[/dim]")
+                    else:
+                        console.print(f"  {key}: {value}")
+                console.print()
+
+        elif choice == 4:
+            # Remove backend
+            name = click.prompt("\nBackend name")
+            if config_manager.has_backend(name):
+                if click.confirm(f"Remove backend '{name}'?"):
+                    config_manager.remove_backend(name)
+                    console.print(f"\n[green]✓[/green] Backend '{name}' removed\n")
+            else:
+                console.print(f"\n[red]Error:[/red] Backend '{name}' not found\n")
+
+        elif choice == 5:
+            console.print("\nExiting configuration manager.\n")
+            break
 
 
 def _load_htpasswd(htpasswd_path: Path) -> tuple[Optional[str], Optional[str]]:
@@ -305,6 +485,11 @@ def _load_htpasswd(htpasswd_path: Path) -> tuple[Optional[str], Optional[str]]:
     except Exception as e:
         console.print(f"[yellow]Warning: Error reading .htpasswd file: {e}[/yellow]")
         return None, None
+
+
+def main() -> None:
+    """Entry point for the CLI."""
+    cli()
 
 
 if __name__ == "__main__":
