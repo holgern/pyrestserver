@@ -260,7 +260,7 @@ def _create_drime_provider(
         Tuple of (DrimeStorageProvider instance, config dict)
     """
     try:
-        from pydrime import DrimeClient
+        from pydrime import DrimeClient  # type: ignore[import-untyped]
 
         from pyrestserver.providers.drime import DrimeStorageProvider
     except ImportError:
@@ -332,7 +332,7 @@ def obscure(password: Optional[str]) -> None:
 
     If PASSWORD is not provided, will prompt for it interactively.
     """
-    from vaultconfig import obscure as obscure_module
+    from vaultconfig import obscure as obscure_module  # type: ignore[import-untyped]
 
     if password is None:
         password = click.prompt("Enter password to obscure", hide_input=True)

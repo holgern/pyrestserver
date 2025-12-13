@@ -9,7 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from vaultconfig import ConfigManager, create_obscurer_from_hex
+from vaultconfig import (  # type: ignore[import-untyped]
+    ConfigManager,
+    create_obscurer_from_hex,
+)
 
 # Backend types specific to pyrestserver
 BackendType = Literal["local", "drime"]
@@ -113,7 +116,8 @@ class PyRestServerConfigManager:
         Returns:
             List of backend names
         """
-        return self._manager.list_configs()
+        result: list[str] = self._manager.list_configs()
+        return result
 
     def get_backend(self, name: str) -> BackendConfig | None:
         """Get backend configuration.
@@ -143,7 +147,8 @@ class PyRestServerConfigManager:
         Returns:
             True if backend exists
         """
-        return self._manager.has_config(name)
+        result: bool = self._manager.has_config(name)
+        return result
 
     def add_backend(
         self,
@@ -184,7 +189,8 @@ class PyRestServerConfigManager:
         Returns:
             True if removed
         """
-        return self._manager.remove_config(name)
+        result: bool = self._manager.remove_config(name)
+        return result
 
     def get_backend_names_by_type(self, backend_type: BackendType) -> list[str]:
         """Get backend names by type.

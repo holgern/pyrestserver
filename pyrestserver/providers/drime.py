@@ -15,8 +15,8 @@ from ..constants import VALID_TYPES
 from ..provider import StorageProvider
 
 if TYPE_CHECKING:
-    from pydrime.api import DrimeClient
-    from pydrime.models import FileEntry
+    from pydrime.api import DrimeClient  # type: ignore[import-untyped]
+    from pydrime.models import FileEntry  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +287,8 @@ class DrimeStorageProvider(StorageProvider):
             return None
 
         try:
-            return self.client.get_file_content(config_entry.hash)
+            content: bytes = self.client.get_file_content(config_entry.hash)
+            return content
         except Exception as e:
             logger.error(f"Error getting config: {e}")
             return None
@@ -481,7 +482,8 @@ class DrimeStorageProvider(StorageProvider):
             return None
 
         try:
-            return self.client.get_file_content(entry.hash)
+            content: bytes = self.client.get_file_content(entry.hash)
+            return content
         except Exception as e:
             logger.error(f"Error getting blob {blob_type}/{name}: {e}")
             return None

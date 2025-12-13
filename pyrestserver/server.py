@@ -695,7 +695,7 @@ def create_provider_from_config(
         )
     elif backend_type == "drime":
         try:
-            from pydrime import DrimeClient
+            from pydrime import DrimeClient  # type: ignore[import-untyped]
 
             from pyrestserver.providers.drime import DrimeStorageProvider
         except ImportError as err:
