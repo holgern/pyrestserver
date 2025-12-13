@@ -366,11 +366,22 @@ class TestFilePermissions(TestLocalStorageProvider):
 
     def test_file_permissions(self):
         """Test that files are created with correct permissions."""
+        import platform
+        import stat
+
         provider = self._create_provider()
         provider.save_config("myrepo", b"config")
         config_file = self.base_path / "myrepo" / "config"
-        # Check file has 0600 permissions (owner read/write only)
-        import stat
 
         mode = config_file.stat().st_mode
-        assert stat.S_IMODE(mode) == 0o600
+
+        # On Windows, file permissions work differently
+        # Windows typically sets files to 0o666 (438 in decimal)
+        if platform.system() == "Windows":
+            # On Windows, just check that the file is readable and writable
+            assert stat.S_IMODE(mode) & stat.S_IREAD
+            assert stat.S_IMODE(mode) & stat.S_IWRITE
+        else:
+            # On Unix-like systems, check file has 0600 permissions
+            # (owner read/write only)
+            assert stat.S_IMODE(mode) == 0o600
