@@ -14,18 +14,48 @@ This script:
 
 from __future__ import annotations
 
-import hashlib
 import os
-import random
-import shutil
-import signal
-import string
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    # Try relative import first (when run as module)
+    from .benchmark_common import (
+        BenchmarkResult,
+        backup_with_restic,
+        cleanup,
+        compare_directories,
+        create_test_files,
+        find_restored_directory,
+        format_bytes,
+        init_restic_repo,
+        print_header,
+        print_report,
+        print_step,
+        restore_with_restic,
+        stop_server,
+    )
+except ImportError:
+    # Fall back to direct import (when run as script)
+    from benchmark_common import (  # type: ignore[import-not-found]
+        BenchmarkResult,
+        backup_with_restic,
+        cleanup,
+        compare_directories,
+        create_test_files,
+        find_restored_directory,
+        format_bytes,
+        init_restic_repo,
+        print_header,
+        print_report,
+        print_step,
+        restore_with_restic,
+        stop_server,
+    )
 
 
 @dataclass
@@ -47,111 +77,6 @@ class BenchmarkConfig:
     # Repository settings
     restic_password: str = "benchmark-password"
     repo_name: str = "benchmark-repo"
-
-
-@dataclass
-class BenchmarkResult:
-    """Results from a benchmark run."""
-
-    config: BenchmarkConfig
-    total_files: int
-    total_size: int
-    init_time: float
-    backup_time: float
-    restore_time: float
-    comparison_success: bool
-    error: str | None = None
-
-
-def print_header(text: str) -> None:
-    """Print a formatted header."""
-    print(f"\n{'=' * 70}")
-    print(f"  {text}")
-    print(f"{'=' * 70}\n")
-
-
-def print_step(text: str) -> None:
-    """Print a step description."""
-    print(f"→ {text}")
-
-
-def format_bytes(size: int) -> str:
-    """Format bytes to human-readable string."""
-    size_float = float(size)
-    for unit in ["B", "KB", "MB", "GB"]:
-        if size_float < 1024:
-            return f"{size_float:.2f} {unit}"
-        size_float /= 1024
-    return f"{size_float:.2f} TB"
-
-
-def format_time(seconds: float) -> str:
-    """Format time to human-readable string."""
-    if seconds < 1:
-        return f"{seconds * 1000:.2f} ms"
-    elif seconds < 60:
-        return f"{seconds:.2f} s"
-    else:
-        minutes = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{minutes}m {secs}s"
-
-
-def generate_random_content(size: int) -> bytes:
-    """Generate random binary content of specified size."""
-    # Use a mix of random bytes and compressible patterns
-    if random.random() > 0.5:
-        # Compressible pattern (repeated characters)
-        char = random.choice(string.ascii_letters).encode()
-        return char * size
-    else:
-        # Random bytes (less compressible)
-        return os.urandom(size)
-
-
-def create_test_files(base_dir: Path, config: BenchmarkConfig) -> tuple[int, int]:
-    """Create random test files in the specified directory.
-
-    Args:
-        base_dir: Base directory to create files in
-        config: Benchmark configuration
-
-    Returns:
-        Tuple of (file_count, total_size)
-    """
-    print_step(f"Creating {config.num_files} test files...")
-
-    # Create subdirectories
-    subdirs = [base_dir]
-    for i in range(config.num_subdirs):
-        subdir = base_dir / f"subdir_{i}"
-        subdir.mkdir(exist_ok=True)
-        subdirs.append(subdir)
-
-    total_size = 0
-    file_count = 0
-
-    for i in range(config.num_files):
-        # Choose random directory
-        target_dir = random.choice(subdirs)
-
-        # Generate random file
-        size = random.randint(config.min_file_size, config.max_file_size)
-        content = generate_random_content(size)
-
-        # Random filename
-        name = f"file_{i}_{random.randint(1000, 9999)}.dat"
-        file_path = target_dir / name
-
-        file_path.write_bytes(content)
-        total_size += size
-        file_count += 1
-
-        if (i + 1) % 20 == 0:
-            print(f"  Created {i + 1}/{config.num_files} files...")
-
-    print(f"  ✓ Created {file_count} files ({format_bytes(total_size)})")
-    return file_count, total_size
 
 
 def start_server(
@@ -208,308 +133,6 @@ def start_server(
     return process
 
 
-def stop_server(process: subprocess.Popen) -> None:
-    """Stop the server process.
-
-    Args:
-        process: Server process handle
-    """
-    print_step("Stopping server...")
-
-    try:
-        # Try graceful shutdown first
-        if hasattr(os, "killpg"):
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        else:
-            process.terminate()
-
-        # Wait up to 5 seconds
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            # Force kill if needed
-            if hasattr(os, "killpg"):
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            else:
-                process.kill()
-            process.wait()
-
-        print("  ✓ Server stopped")
-    except Exception as e:
-        print(f"  ⚠ Error stopping server: {e}")
-
-
-def run_restic_command(
-    cmd: list[str], env: dict[str, str], timeout: int = 300
-) -> tuple[bool, str, float]:
-    """Run a restic command and measure execution time.
-
-    Args:
-        cmd: Command to run
-        env: Environment variables
-        timeout: Command timeout in seconds
-
-    Returns:
-        Tuple of (success, output, elapsed_time)
-    """
-    start_time = time.time()
-
-    try:
-        result = subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-        elapsed = time.time() - start_time
-
-        success = result.returncode == 0
-        output = result.stdout + result.stderr
-
-        return success, output, elapsed
-    except subprocess.TimeoutExpired:
-        elapsed = time.time() - start_time
-        return False, f"Command timed out after {timeout}s", elapsed
-    except Exception as e:
-        elapsed = time.time() - start_time
-        return False, str(e), elapsed
-
-
-def init_restic_repo(config: BenchmarkConfig) -> tuple[bool, float, str]:
-    """Initialize restic repository.
-
-    Args:
-        config: Benchmark configuration
-
-    Returns:
-        Tuple of (success, elapsed_time, error_message)
-    """
-    print_step("Initializing restic repository...")
-
-    repo_url = (
-        f"rest:http://{config.server_host}:{config.server_port}/{config.repo_name}"
-    )
-
-    env = os.environ.copy()
-    env["RESTIC_PASSWORD"] = config.restic_password
-
-    cmd = ["restic", "-r", repo_url, "init"]
-
-    success, output, elapsed = run_restic_command(cmd, env)
-
-    if success:
-        print(f"  ✓ Repository initialized ({format_time(elapsed)})")
-        return True, elapsed, ""
-    else:
-        print(f"  ✗ Initialization failed: {output}")
-        return False, elapsed, output
-
-
-def backup_with_restic(
-    config: BenchmarkConfig, source_dir: Path
-) -> tuple[bool, float, str]:
-    """Backup directory with restic.
-
-    Args:
-        config: Benchmark configuration
-        source_dir: Directory to backup
-
-    Returns:
-        Tuple of (success, elapsed_time, error_message)
-    """
-    print_step("Backing up with restic...")
-
-    repo_url = (
-        f"rest:http://{config.server_host}:{config.server_port}/{config.repo_name}"
-    )
-
-    env = os.environ.copy()
-    env["RESTIC_PASSWORD"] = config.restic_password
-
-    cmd = ["restic", "-r", repo_url, "backup", str(source_dir)]
-
-    success, output, elapsed = run_restic_command(cmd, env)
-
-    if success:
-        print(f"  ✓ Backup completed ({format_time(elapsed)})")
-        return True, elapsed, ""
-    else:
-        print(f"  ✗ Backup failed: {output}")
-        return False, elapsed, output
-
-
-def restore_with_restic(
-    config: BenchmarkConfig, restore_dir: Path
-) -> tuple[bool, float, str]:
-    """Restore latest snapshot with restic.
-
-    Args:
-        config: Benchmark configuration
-        restore_dir: Directory to restore to
-
-    Returns:
-        Tuple of (success, elapsed_time, error_message)
-    """
-    print_step("Restoring with restic...")
-
-    repo_url = (
-        f"rest:http://{config.server_host}:{config.server_port}/{config.repo_name}"
-    )
-
-    env = os.environ.copy()
-    env["RESTIC_PASSWORD"] = config.restic_password
-
-    cmd = ["restic", "-r", repo_url, "restore", "latest", "--target", str(restore_dir)]
-
-    success, output, elapsed = run_restic_command(cmd, env)
-
-    if success:
-        print(f"  ✓ Restore completed ({format_time(elapsed)})")
-        return True, elapsed, ""
-    else:
-        print(f"  ✗ Restore failed: {output}")
-        return False, elapsed, output
-
-
-def compute_file_hash(file_path: Path) -> str:
-    """Compute SHA256 hash of a file."""
-    sha256 = hashlib.sha256()
-    with file_path.open("rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
-    return sha256.hexdigest()
-
-
-def compare_directories(dir1: Path, dir2: Path) -> tuple[bool, list[str]]:
-    """Compare two directories recursively.
-
-    Args:
-        dir1: First directory
-        dir2: Second directory
-
-    Returns:
-        Tuple of (match, differences)
-    """
-    print_step("Comparing directories...")
-
-    differences = []
-
-    # Get all files in both directories
-    files1 = {p.relative_to(dir1): p for p in dir1.rglob("*") if p.is_file()}
-    files2 = {p.relative_to(dir2): p for p in dir2.rglob("*") if p.is_file()}
-
-    # Check for missing files
-    only_in_1 = set(files1.keys()) - set(files2.keys())
-    only_in_2 = set(files2.keys()) - set(files1.keys())
-
-    if only_in_1:
-        differences.append(f"Files only in original: {only_in_1}")
-    if only_in_2:
-        differences.append(f"Files only in restore: {only_in_2}")
-
-    # Compare common files
-    common_files = set(files1.keys()) & set(files2.keys())
-    for rel_path in common_files:
-        file1 = files1[rel_path]
-        file2 = files2[rel_path]
-
-        # Compare sizes
-        if file1.stat().st_size != file2.stat().st_size:
-            differences.append(
-                f"Size mismatch for {rel_path}: "
-                f"{file1.stat().st_size} vs {file2.stat().st_size}"
-            )
-            continue
-
-        # Compare content (hash)
-        hash1 = compute_file_hash(file1)
-        hash2 = compute_file_hash(file2)
-
-        if hash1 != hash2:
-            differences.append(f"Content mismatch for {rel_path}")
-
-    if not differences:
-        print(f"  ✓ Directories match perfectly ({len(common_files)} files)")
-        return True, []
-    else:
-        print(f"  ✗ Found {len(differences)} differences")
-        for diff in differences[:5]:  # Show first 5
-            print(f"    - {diff}")
-        if len(differences) > 5:
-            print(f"    ... and {len(differences) - 5} more")
-        return False, differences
-
-
-def cleanup(paths: list[Path]) -> None:
-    """Clean up test directories.
-
-    Args:
-        paths: List of paths to remove
-    """
-    print_step("Cleaning up...")
-
-    for path in paths:
-        try:
-            if path.exists():
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-                print(f"  ✓ Removed {path}")
-        except Exception as e:
-            print(f"  ⚠ Failed to remove {path}: {e}")
-
-
-def print_report(result: BenchmarkResult) -> None:
-    """Print benchmark report.
-
-    Args:
-        result: Benchmark results
-    """
-    print_header("BENCHMARK REPORT")
-
-    print("Configuration:")
-    print(f"  Files:           {result.config.num_files}")
-    print(
-        f"  File size range: {format_bytes(result.config.min_file_size)} - "
-        f"{format_bytes(result.config.max_file_size)}"
-    )
-    print(f"  Subdirectories:  {result.config.num_subdirs}")
-    print(f"  Server:          {result.config.server_host}:{result.config.server_port}")
-
-    print("\nTest Data:")
-    print(f"  Total files:     {result.total_files}")
-    print(f"  Total size:      {format_bytes(result.total_size)}")
-
-    print("\nPerformance:")
-    print(f"  Init time:       {format_time(result.init_time)}")
-    print(f"  Backup time:     {format_time(result.backup_time)}")
-    print(f"  Restore time:    {format_time(result.restore_time)}")
-    total_time = result.init_time + result.backup_time + result.restore_time
-    print(f"  Total time:      {format_time(total_time)}")
-
-    if result.backup_time > 0:
-        throughput = result.total_size / result.backup_time
-        print(f"  Backup rate:     {format_bytes(int(throughput))}/s")
-
-    if result.restore_time > 0:
-        throughput = result.total_size / result.restore_time
-        print(f"  Restore rate:    {format_bytes(int(throughput))}/s")
-
-    print("\nVerification:")
-    if result.comparison_success:
-        print("  ✓ Backup and restore successful - all files match!")
-    else:
-        print("  ✗ Verification failed - files don't match")
-
-    if result.error:
-        print(f"\nError: {result.error}")
-
-    print(f"\n{'=' * 70}\n")
-
-
 def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
     """Run the complete benchmark.
 
@@ -546,43 +169,57 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
 
     try:
         # Create test files
-        file_count, total_size = create_test_files(source_dir, config)
+        file_count, total_size = create_test_files(
+            source_dir,
+            config.num_files,
+            config.min_file_size,
+            config.max_file_size,
+            config.num_subdirs,
+        )
 
         # Start server
         server_process = start_server(config, server_data_dir, log_file)
 
         # Initialize repository
-        success, init_time, error = init_restic_repo(config)
+        success, init_time, error = init_restic_repo(
+            config.server_host,
+            config.server_port,
+            config.repo_name,
+            config.restic_password,
+        )
         if not success:
             error_msg = f"Init failed: {error}"
             raise RuntimeError(error_msg)
 
         # Backup
-        success, backup_time, error = backup_with_restic(config, source_dir)
+        success, backup_time, error = backup_with_restic(
+            config.server_host,
+            config.server_port,
+            config.repo_name,
+            config.restic_password,
+            source_dir,
+        )
         if not success:
             error_msg = f"Backup failed: {error}"
             raise RuntimeError(error_msg)
 
         # Restore
-        success, restore_time, error = restore_with_restic(config, restore_dir)
+        success, restore_time, error = restore_with_restic(
+            config.server_host,
+            config.server_port,
+            config.repo_name,
+            config.restic_password,
+            restore_dir,
+        )
         if not success:
             error_msg = f"Restore failed: {error}"
             raise RuntimeError(error_msg)
 
         # Compare directories
-        # restic restores to target/hostname/path,
-        # so we need to find the actual restore path
-        restored_paths = list(restore_dir.rglob(source_dir.name))
-        if not restored_paths:
-            # Try finding any subdirectory with files
-            for path in restore_dir.rglob("*"):
-                if path.is_dir() and any(path.iterdir()):
-                    restored_paths = [path]
-                    break
-
-        if restored_paths:
+        restored_path = find_restored_directory(restore_dir, source_dir)
+        if restored_path:
             comparison_success, differences = compare_directories(
-                source_dir, restored_paths[0]
+                source_dir, restored_path
             )
         else:
             error_msg = "Could not find restored files"
@@ -599,13 +236,21 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
 
         # Create result
         result = BenchmarkResult(
-            config=config,
             total_files=file_count,
             total_size=total_size,
             init_time=init_time,
             backup_time=backup_time,
             restore_time=restore_time,
             comparison_success=comparison_success,
+            backend_type="Local",
+            config_summary={
+                "Files": config.num_files,
+                "File size range": f"{format_bytes(config.min_file_size)} - "
+                f"{format_bytes(config.max_file_size)}",
+                "Subdirectories": config.num_subdirs,
+                "Server": f"{config.server_host}:{config.server_port}",
+                "Backend": "Local",
+            },
             error=error_msg,
         )
 
