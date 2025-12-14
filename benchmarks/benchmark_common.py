@@ -341,6 +341,10 @@ def restore_with_restic(
         str(restore_dir),
     ]
 
+    # On Windows, skip timestamp restoration to avoid permission issues
+    if sys.platform == "win32":
+        cmd.append("--no-restore-permissions")
+
     success, output, elapsed = run_restic_command(cmd, env)
 
     if success:
