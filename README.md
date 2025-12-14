@@ -1,3 +1,7 @@
+[![PyPI - Version](https://img.shields.io/pypi/v/pyrestserver)](https://pypi.org/project/pyrestserver/)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pyrestserver)
+![PyPI - Downloads](https://img.shields.io/pypi/dm/pyrestserver)
+[![codecov](https://codecov.io/gh/holgern/pyrestserver/graph/badge.svg?token=iCHXwbjAXG)](https://codecov.io/gh/holgern/pyrestserver)
 # pyrestserver
 
 REST API server for [restic](https://restic.net/) backup software with pluggable storage
