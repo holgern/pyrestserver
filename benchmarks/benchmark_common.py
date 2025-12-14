@@ -222,7 +222,8 @@ def run_restic_command(
         elapsed = time.time() - start_time
         return (
             False,
-            f"Command not found: {cmd[0]}. Please ensure restic is installed and in your PATH. Error: {e}",
+            f"Command not found: {cmd[0]}. Please ensure restic is "
+            f"installed and in your PATH. Error: {e}",
             elapsed,
         )
     except Exception as e:
