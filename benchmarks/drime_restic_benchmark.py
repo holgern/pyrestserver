@@ -114,14 +114,22 @@ def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
     env["DRIME_API_KEY"] = config.drime_api_key
     env["DRIME_WORKSPACE_ID"] = str(config.workspace_id)
 
-    with log_file.open("w") as log:
-        process = subprocess.Popen(
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
-            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
-        )
+    # Prepare subprocess arguments based on platform
+    log = log_file.open("w")
+    kwargs = {
+        "stdout": log,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+    }
+
+    if hasattr(os, "setsid"):
+        # Unix/Linux/macOS
+        kwargs["preexec_fn"] = os.setsid
+    elif sys.platform == "win32":
+        # Windows - create new process group
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+
+    process = subprocess.Popen(cmd, **kwargs)
 
     # Wait for server to start
     print("  Waiting for server to initialize...")
@@ -129,6 +137,7 @@ def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
 
     # Check if server is running
     if process.poll() is not None:
+        log.close()
         with log_file.open() as f:
             print(f"Server failed to start. Log:\n{f.read()}")
         raise RuntimeError("Failed to start pyrestserver")

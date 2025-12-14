@@ -112,19 +112,28 @@ def start_server(
         "--no-auth",  # Disable auth for benchmark
     ]
 
-    with log_file.open("w") as log:
-        process = subprocess.Popen(
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
-        )
+    # Prepare subprocess arguments based on platform
+    log = log_file.open("w")
+    kwargs = {
+        "stdout": log,
+        "stderr": subprocess.STDOUT,
+    }
+
+    if hasattr(os, "setsid"):
+        # Unix/Linux/macOS
+        kwargs["preexec_fn"] = os.setsid
+    elif sys.platform == "win32":
+        # Windows - create new process group
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+
+    process = subprocess.Popen(cmd, **kwargs)
 
     # Wait for server to start
     time.sleep(2)
 
     # Check if server is running
     if process.poll() is not None:
+        log.close()
         with log_file.open() as f:
             print(f"Server failed to start. Log:\n{f.read()}")
         raise RuntimeError("Failed to start pyrestserver")
