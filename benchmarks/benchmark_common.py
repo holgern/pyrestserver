@@ -13,6 +13,7 @@ import shutil
 import signal
 import string
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -133,6 +134,26 @@ def create_test_files(
     return file_count, total_size
 
 
+def get_restic_command() -> str:
+    """Get the correct restic command for the current platform.
+
+    Returns:
+        Command name to use for restic
+    """
+    # On Windows, try to find restic.exe
+    if sys.platform == "win32":
+        # Check if restic.exe exists in PATH
+        import shutil as sh
+
+        restic_path = sh.which("restic.exe")
+        if restic_path:
+            return "restic.exe"
+        # Fall back to just "restic"
+        return "restic"
+    else:
+        return "restic"
+
+
 def stop_server(process: subprocess.Popen) -> None:
     """Stop the server process.
 
@@ -197,9 +218,16 @@ def run_restic_command(
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
         return False, f"Command timed out after {timeout}s", elapsed
+    except FileNotFoundError as e:
+        elapsed = time.time() - start_time
+        return (
+            False,
+            f"Command not found: {cmd[0]}. Please ensure restic is installed and in your PATH. Error: {e}",
+            elapsed,
+        )
     except Exception as e:
         elapsed = time.time() - start_time
-        return False, str(e), elapsed
+        return False, f"Error running command: {e}", elapsed
 
 
 def init_restic_repo(
@@ -223,7 +251,8 @@ def init_restic_repo(
     env = os.environ.copy()
     env["RESTIC_PASSWORD"] = restic_password
 
-    cmd = ["restic", "-r", repo_url, "init"]
+    restic_cmd = get_restic_command()
+    cmd = [restic_cmd, "-r", repo_url, "init"]
 
     success, output, elapsed = run_restic_command(cmd, env)
 
@@ -261,7 +290,8 @@ def backup_with_restic(
     env = os.environ.copy()
     env["RESTIC_PASSWORD"] = restic_password
 
-    cmd = ["restic", "-r", repo_url, "backup", str(source_dir)]
+    restic_cmd = get_restic_command()
+    cmd = [restic_cmd, "-r", repo_url, "backup", str(source_dir)]
 
     success, output, elapsed = run_restic_command(cmd, env)
 
@@ -299,7 +329,16 @@ def restore_with_restic(
     env = os.environ.copy()
     env["RESTIC_PASSWORD"] = restic_password
 
-    cmd = ["restic", "-r", repo_url, "restore", "latest", "--target", str(restore_dir)]
+    restic_cmd = get_restic_command()
+    cmd = [
+        restic_cmd,
+        "-r",
+        repo_url,
+        "restore",
+        "latest",
+        "--target",
+        str(restore_dir),
+    ]
 
     success, output, elapsed = run_restic_command(cmd, env)
 
