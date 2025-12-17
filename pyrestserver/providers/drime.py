@@ -46,8 +46,10 @@ class DrimeStorageProvider(StorageProvider):
             client: The Drime API client
             config: Configuration dict (can include workspace_id, delete_forever, etc.)
             readonly: Whether to allow write operations
-            delete_forever: Whether to permanently delete files (True) or move to trash (False).
-                Can also be set via config['delete_forever']. Default is True for restic compatibility.
+            delete_forever: Whether to permanently delete files (True)
+                or move to trash (False).
+                Can also be set via config['delete_forever'].
+                Default is True for restic compatibility.
         """
         self.client = client
         self._config = config or {}
