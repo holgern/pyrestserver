@@ -38,19 +38,24 @@ class DrimeStorageProvider(StorageProvider):
         client: DrimeClient,
         config: dict[str, Any] | None = None,
         readonly: bool = False,
+        delete_forever: bool = True,
     ) -> None:
         """Initialize the storage provider.
 
         Args:
             client: The Drime API client
-            config: Configuration dict (can include workspace_id, etc.)
+            config: Configuration dict (can include workspace_id, delete_forever, etc.)
             readonly: Whether to allow write operations
+            delete_forever: Whether to permanently delete files (True) or move to trash (False).
+                Can also be set via config['delete_forever']. Default is True for restic compatibility.
         """
         self.client = client
         self._config = config or {}
         # Get workspace_id from config, default to 0 (personal)
         self.workspace_id = self._config.get("workspace_id", 0)
         self._readonly = readonly
+        # Get delete_forever preference (parameter takes precedence over config)
+        self._delete_forever = self._config.get("delete_forever", delete_forever)
         # Cache for folder IDs to reduce API calls
         self._folder_cache: dict[str, int | None] = {}
 
@@ -258,7 +263,11 @@ class DrimeStorageProvider(StorageProvider):
             return False
 
         try:
-            self.client.delete_file_entries([folder_id], workspace_id=self.workspace_id)
+            self.client.delete_file_entries(
+                [folder_id],
+                delete_forever=self._delete_forever,
+                workspace_id=self.workspace_id,
+            )
             # Clear cache entries for this repo
             to_remove = [k for k in self._folder_cache if k.startswith(path)]
             for k in to_remove:
@@ -576,7 +585,11 @@ class DrimeStorageProvider(StorageProvider):
             return False
 
         try:
-            self.client.delete_file_entries([entry.id], workspace_id=self.workspace_id)
+            self.client.delete_file_entries(
+                [entry.id],
+                delete_forever=self._delete_forever,
+                workspace_id=self.workspace_id,
+            )
             return True
         except Exception as e:
             logger.error(f"Error deleting blob {blob_type}/{name}: {e}")
